@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Watch Video — Then Form</title>
+  <style>
+    :root { --bg:#0f1724; --card:#071024; --accent:#06b6d4; --text:#e6eef8; }
+    html,body { height:100%; margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial; background:var(--bg); color:var(--text); display:flex; align-items:center; justify-content:center; }
+    .card { background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)); padding:20px; border-radius:12px; width:min(960px,96%); box-shadow:0 6px 30px rgba(2,6,23,0.6); }
+    h1 { margin:0 0 8px 0; font-size:1.25rem; }
+    p { margin:0 0 16px 0; color:#9fbfdc; }
+
+    .player-wrap { position:relative; background:#000; border-radius:8px; overflow:hidden; }
+    #player { display:block; width:100%; height:540px; background:#000; }
+
+    .controls { display:flex; gap:12px; align-items:center; margin-top:12px; }
+    .btn { background:var(--accent); color:#042330; border:none; padding:8px 12px; border-radius:8px; font-weight:600; cursor:pointer; }
+    .btn.secondary { background:transparent; color:var(--text); border:1px solid rgba(255,255,255,0.06); }
+    .progress { flex:1; height:10px; background:#0b1a2b; border-radius:6px; overflow:hidden; position:relative; cursor:pointer; }
+    .progress > i { position:absolute; left:0; top:0; bottom:0; width:0%; background:linear-gradient(90deg,#60a5fa,#06b6d4); transition:width .12s linear; }
+    .time { min-width:100px; text-align:right; color:#9fbfdc; font-weight:600; }
+    .hint { margin-top:10px; font-size:0.92rem; color:#a9c3d9; }
+
+    /* small screens */
+    @media (max-width:720px) {
+      #player { height:260px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="card" role="main">
+    <h1>Please watch the full video</h1>
+    <p>The Google Form will open automatically when the video finishes.</p>
+
+    <div class="player-wrap" aria-label="YouTube player">
+      <!-- The YouTube IFrame API will replace this div with a player -->
+      <div id="player"></div>
+    </div>
+
+    <div class="controls" aria-hidden="false">
+      <button id="playBtn" class="btn">Play</button>
+      <button id="pauseBtn" class="btn secondary" style="display:none;">Pause</button>
+      <div id="progress" class="progress" title="Click to seek (forward seeking is disabled)">
+        <i id="bar"></i>
+      </div>
+      <div id="timeLabel" class="time">0:00 / 0:00</div>
+    </div>
+
+    <div class="hint">
+      Forward seeking is disabled while watching (best-effort). If you reload, playback resumes from where you left off in this session.
+    </div>
+  </main>
+
+  <script>
+    /************************************************************************
+     * CONFIG
+     *
+     * VIDEO_ID : YouTube video id (from your provided link: https://youtu.be/n5sQXk3QVhQ)
+     * FORM_URL  : Google Form URL to redirect to after the video ends
+     *
+     * NOTE: This uses the YouTube IFrame Player API so we can detect the exact
+     *       "ended" event and control seeking. Browsers and users can still
+     *       circumvent JS controls, this is a best-effort approach.
+     ************************************************************************/
+    const VIDEO_ID = 'n5sQXk3QVhQ';
+    const FORM_URL = 'https://docs.google.com/forms/d/e/1FAIpQLSfL5MQHS-cdhk0r3rKpM2xXZARfmZNpCt6KDpD4D5gZdu_Ecg/viewform';
+    const FORWARD_ALLOWANCE = 0.4; // seconds tolerance for tiny jumps
+    const POLL_INTERVAL_MS = 250;
+
+    // session storage key to persist progress for this video in this session
+    const STORAGE_KEY = `yt_watch_last_time_${VIDEO_ID}`;
+
+    // UI elements
+    const playBtn = document.getElementById('playBtn');
+    const pauseBtn = document.getElementById('pauseBtn');
+    const bar = document.getElementById('bar');
+    const progress = document.getElementById('progress');
+    const timeLabel = document.getElementById('timeLabel');
+
+    let player = null;
+    let pollTimer = null;
+    let lastApproved = parseFloat(sessionStorage.getItem(STORAGE_KEY) || '0') || 0;
+    let duration = 0;
+    let durationKnown = false;
+
+    function formatTime(s) {
+      if (!isFinite(s)) return '0:00';
+      const m = Math.floor(s / 60);
+      const sec = Math.floor(s % 60).toString().padStart(2, '0');
+      return `${m}:${sec}`;
+    }
+
+    function updateTimeUI(cur) {
+      const dur = duration || 0;
+      const pct = dur ? (cur / dur) * 100 : 0;
+      bar.style.width = pct + '%';
+      timeLabel.textContent = `${formatTime(cur)} / ${formatTime(dur)}`;
+    }
+
+    // Poll current time while playing to enforce forward-seek prevention
+    function startPolling() {
+      if (pollTimer) return;
+      pollTimer = setInterval(() => {
+        if (!player || typeof player.getCurrentTime !== 'function') return;
+        const cur = player.getCurrentTime();
+        // If user jumped forward beyond allowance, clamp back
+        if (cur > lastApproved + FORWARD_ALLOWANCE) {
+          // revert to lastApproved (preserve play/pause state)
+          player.seekTo(lastApproved, true);
+          return;
+        }
+        // natural progress -> update lastApproved
+        lastApproved = Math.max(lastApproved, cur);
+        sessionStorage.setItem(STORAGE_KEY, String(lastApproved));
+        updateTimeUI(cur);
+      }, POLL_INTERVAL_MS);
+    }
+
+    function stopPolling() {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    }
+
+    // Click handlers for our play/pause controls
+    playBtn.addEventListener('click', () => {
+      if (!player) return;
+      player.playVideo();
+    });
+    pauseBtn.addEventListener('click', () => {
+      if (!player) return;
+      player.pauseVideo();
+    });
+
+    // Clicking progress -> allow seeking only up to lastApproved + allowance
+    progress.addEventListener('click', (ev) => {
+      if (!player || !durationKnown) return;
+      const rect = progress.getBoundingClientRect();
+      const x = ev.clientX - rect.left;
+      const pct = Math.max(0, Math.min(1, x / rect.width));
+      const target = pct * duration;
+      if (target <= lastApproved + FORWARD_ALLOWANCE) {
+        player.seekTo(target, true);
+        updateTimeUI(target);
+      } else {
+        // optional: brief visual feedback - simple shake or flash
+        progress.animate([{ transform: 'translateX(0)' }, { transform: 'translateX(-6px)' }, { transform: 'translateX(6px)' }, { transform: 'translateX(0)' }], { duration: 220 });
+      }
+    });
+
+    // YouTube IFrame API callbacks
+    function onPlayerReady(event) {
+      // get duration when possible
+      const trySetDuration = () => {
+        const d = player.getDuration();
+        if (d && isFinite(d) && d > 0) {
+          duration = d;
+          durationKnown = true;
+          // if we have stored progress, resume from there (if it's less than duration)
+          if (lastApproved && lastApproved < duration - 0.5) {
+            // use seekTo with allowSeekAhead=true to position the video
+            player.seekTo(lastApproved, true);
+          }
+          updateTimeUI(lastApproved || 0);
+        } else {
+          // try again shortly (sometimes duration isn't ready immediately)
+          setTimeout(trySetDuration, 300);
+        }
+      };
+      trySetDuration();
+    }
+
+    function onPlayerStateChange(event) {
+      const state = event.data;
+      // YT.PlayerState: -1 (unstarted), 0 (ended), 1 (playing), 2 (paused), 3 (buffering), 5 (video cued)
+      if (state === YT.PlayerState.PLAYING) {
+        // update buttons
+        playBtn.style.display = 'none';
+        pauseBtn.style.display = '';
+        startPolling();
+      } else {
+        // not playing
+        playBtn.style.display = '';
+        pauseBtn.style.display = 'none';
+        stopPolling();
+      }
+
+      if (state === YT.PlayerState.ENDED) {
+        // Clear progress for this session (optional)
+        sessionStorage.removeItem(STORAGE_KEY);
+        // Redirect to the Google Form (open in same tab)
+        window.location.href = FORM_URL;
+      }
+
+      // If user seeks via keyboard or other means, the poll will clamp them back; also handle "seeked" by checking time after a short delay
+      if (state === YT.PlayerState.PAUSED || state === YT.PlayerState.BUFFERING) {
+        // small safety: after brief delay, ensure currentTime isn't beyond lastApproved
+        setTimeout(() => {
+          if (!player || !durationKnown) return;
+          const cur = player.getCurrentTime();
+          if (cur > lastApproved + FORWARD_ALLOWANCE) {
+            player.seekTo(lastApproved, true);
+          }
+          updateTimeUI(cur);
+        }, 260);
+      }
+    }
+
+    // Load the YouTube IFrame API script
+    (function loadYouTubeAPI() {
+      const tag = document.createElement('script');
+      tag.src = "https://www.youtube.com/iframe_api";
+      const firstScript = document.getElementsByTagName('script')[0];
+      firstScript.parentNode.insertBefore(tag, firstScript);
+    })();
+
+    // This function will be called by the YouTube IFrame API when it is ready
+    function onYouTubeIframeAPIReady() {
+      player = new YT.Player('player', {
+        height: '540',
+        width: '960',
+        videoId: VIDEO_ID,
+        playerVars: {
+          controls: 0,         // hide native controls so we can prevent forward seeking reliably
+          modestbranding: 1,
+          rel: 0,
+          disablekb: 1,       // disable keyboard shortcuts that could seek
+          fs: 1,              // allow fullscreen
+          playsinline: 1
+        },
+        events: {
+          'onReady': onPlayerReady,
+          'onStateChange': onPlayerStateChange
+        }
+      });
+    }
+
+    // Expose the API callback (YouTube looks for this globally)
+    window.onYouTubeIframeAPIReady = onYouTubeIframeAPIReady;
+
+    // Save progress on unload as final safety
+    window.addEventListener('beforeunload', () => {
+      if (lastApproved) sessionStorage.setItem(STORAGE_KEY, String(lastApproved));
+    });
+
+    // Accessibility: space toggles play/pause (we disabled keyboard on embedded player)
+    document.addEventListener('keydown', (e) => {
+      if (e.code === 'Space') {
+        e.preventDefault();
+        if (player) {
+          const state = player.getPlayerState();
+          if (state === YT.PlayerState.PLAYING) player.pauseVideo();
+          else player.playVideo();
+        }
+      }
+    });
+
+    // Sanity checks / developer hints
+    if (!FORM_URL || FORM_URL.indexOf('docs.google.com/forms') === -1) {
+      console.warn('Please confirm FORM_URL is set to your Google Form URL.');
+    }
+  </script>
+</body>
+</html>
