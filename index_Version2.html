@@ -6,7 +6,7 @@
   <title>Watch Video — Then Form</title>
   <style>
     :root { --bg:#0f1724; --card:#071024; --accent:#06b6d4; --text:#e6eef8; }
-    html,body { height:100%; margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial; background:var(--bg); color:var(--text); display:flex; align-items:center; justify-content:center; }
+    html,body { height:100%; margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial; background:var(--bg); color:var(--text); display:flex; align-items:center; justify-co[...]
     .card { background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)); padding:20px; border-radius:12px; width:min(960px,96%); box-shadow:0 6px 30px rgba(2,6,23,0.6); }
     h1 { margin:0 0 8px 0; font-size:1.25rem; }
     p { margin:0 0 16px 0; color:#9fbfdc; }
@@ -56,14 +56,14 @@
     /************************************************************************
      * CONFIG
      *
-     * VIDEO_ID : YouTube video id (from your provided link: https://youtu.be/n5sQXk3QVhQ)
+     * VIDEO_ID : YouTube video id (shorts link provided: https://youtube.com/shorts/zRCeMOn8Gb4?si=qQ2Wow9OoD1w-kXE)
      * FORM_URL  : Google Form URL to redirect to after the video ends
      *
      * NOTE: This uses the YouTube IFrame Player API so we can detect the exact
      *       "ended" event and control seeking. Browsers and users can still
      *       circumvent JS controls, this is a best-effort approach.
      ************************************************************************/
-    const VIDEO_ID = 'n5sQXk3QVhQ';
+    const VIDEO_ID = 'zRCeMOn8Gb4';
     const FORM_URL = 'https://docs.google.com/forms/d/e/1FAIpQLSfL5MQHS-cdhk0r3rKpM2xXZARfmZNpCt6KDpD4D5gZdu_Ecg/viewform';
     const FORWARD_ALLOWANCE = 0.4; // seconds tolerance for tiny jumps
     const POLL_INTERVAL_MS = 250;
@@ -164,6 +164,16 @@
             player.seekTo(lastApproved, true);
           }
           updateTimeUI(lastApproved || 0);
+
+          // Attempt autoplay: mute first to increase chance browsers will allow autoplay,
+          // then start playback. If you prefer unmuted autoplay, remove the mute() call,
+          // but many browsers block autoplay unless muted.
+          try {
+            if (typeof player.mute === 'function') player.mute();
+            if (typeof player.playVideo === 'function') player.playVideo();
+          } catch (e) {
+            // ignore
+          }
         } else {
           // try again shortly (sometimes duration isn't ready immediately)
           setTimeout(trySetDuration, 300);
@@ -228,7 +238,8 @@
           rel: 0,
           disablekb: 1,       // disable keyboard shortcuts that could seek
           fs: 1,              // allow fullscreen
-          playsinline: 1
+          playsinline: 1,
+          autoplay: 1         // attempt to autoplay (we also mute before play to improve success rate)
         },
         events: {
           'onReady': onPlayerReady,
